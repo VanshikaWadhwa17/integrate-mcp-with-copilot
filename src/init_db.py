@@ -5,7 +5,7 @@ Run this script to set up the database with the initial activities and participa
 """
 
 from database import engine, SessionLocal, init_db
-from models import Base, Activity, Student, activity_participants
+from models import Base, Activity, Student, ActivityMembership
 import os
 
 # Initialize database schema
@@ -107,9 +107,17 @@ for activity_data in sample_activities:
             db.add(student)
             db.flush()
 
-        # Associate student with activity
-        if student not in activity.participants:
-            activity.participants.append(student)  # type: ignore
+            # Associate student with activity via membership record
+            existing_membership = db.query(ActivityMembership).filter(
+                ActivityMembership.activity_id == activity.id,
+                ActivityMembership.student_email == email
+            ).first()
+            if not existing_membership:
+                membership = ActivityMembership(
+                    activity_id=activity.id,
+                    student_email=email
+                )
+                db.add(membership)
 
 db.commit()
 db.close()
