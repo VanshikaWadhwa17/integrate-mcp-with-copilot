@@ -3,8 +3,9 @@ Pydantic schemas for request/response validation.
 """
 
 from pydantic import BaseModel, EmailStr
-from typing import Optional
-from models import UserRole
+from typing import Optional, List
+from datetime import datetime
+from models import UserRole, ActivityMembershipStatus
 
 
 class UserRegister(BaseModel):
@@ -46,6 +47,24 @@ class ActivityResponse(BaseModel):
     schedule: str
     max_participants: int
     participants: list
+
+    class Config:
+        from_attributes = True
+
+
+class ActivityMembershipCreate(BaseModel):
+    student_email: EmailStr
+    notes: Optional[str] = None
+
+
+class ActivityMembershipResponse(BaseModel):
+    id: int
+    activity_id: int
+    student_email: EmailStr
+    signup_date: datetime
+    withdrawn_date: Optional[datetime] = None
+    status: ActivityMembershipStatus
+    notes: Optional[str] = None
 
     class Config:
         from_attributes = True

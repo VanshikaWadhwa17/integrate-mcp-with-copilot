@@ -2,22 +2,13 @@
 Database models for the activity management system.
 """
 
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Table, Enum
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Enum
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
 import enum
 
 Base = declarative_base()
-
-# Association table for many-to-many relationship between activities and students
-activity_participants = Table(
-    'activity_participants',
-    Base.metadata,
-    Column('activity_id', Integer, ForeignKey('activity.id'), primary_key=True),
-    Column('student_email', String, ForeignKey('student.email'), primary_key=True),
-    Column('signup_date', DateTime, default=datetime.utcnow)
-)
 
 
 class UserRole(str, enum.Enum):
@@ -52,12 +43,12 @@ class Activity(Base):
     max_participants = Column(Integer)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
-    # Relationship to students
-    participants = relationship(
-        "Student",
-        secondary=activity_participants,
-        backref="activities"
+
+    # Relationship to membership records
+    memberships = relationship(
+        "ActivityMembership",
+        back_populates="activity",
+        cascade="all, delete-orphan"
     )
 
 
@@ -68,4 +59,32 @@ class Student(Base):
     email = Column(String, primary_key=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    memberships = relationship(
+        "ActivityMembership",
+        back_populates="student",
+        cascade="all, delete-orphan"
+    )
+
+
+class ActivityMembershipStatus(str, enum.Enum):
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+    WITHDRAWN = "withdrawn"
+
+
+class ActivityMembership(Base):
+    """Detailed membership tracking between Activity and Student."""
+    __tablename__ = "activity_membership"
+
+    id = Column(Integer, primary_key=True, index=True)
+    activity_id = Column(Integer, ForeignKey('activity.id'), index=True)
+    student_email = Column(String, ForeignKey('student.email'), index=True)
+    signup_date = Column(DateTime, default=datetime.utcnow)
+    withdrawn_date = Column(DateTime, nullable=True)
+    status = Column(Enum(ActivityMembershipStatus), default=ActivityMembershipStatus.ACTIVE)
+    notes = Column(String, nullable=True)
+
+    activity = relationship("Activity", back_populates="memberships")
+    student = relationship("Student", back_populates="memberships")
 

@@ -19,10 +19,11 @@ import os
 from pathlib import Path
 from sqlalchemy.orm import Session
 from database import SessionLocal, init_db, get_db
-from models import Activity, Student, User, UserRole
+from models import Activity, Student, User, UserRole, ActivityMembership, ActivityMembershipStatus
 from auth import hash_password, verify_password, create_access_token, decode_token
 from schemas import UserRegister, UserLogin, Token, UserResponse
 import secrets
+from datetime import datetime
 
 app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
@@ -149,24 +150,28 @@ def get_current_user_info(current_user: User = Depends(get_current_user)):
 @app.get("/activities")
 def get_activities(db: Session = Depends(get_db)):
     """Get all activities with their participants."""
-    from models import activity_participants
-    
     activities_list = db.query(Activity).all()
     result = {}
     for activity in activities_list:
-        # Get participants for this activity
-        participants = db.query(Student.email).join(
-            activity_participants
-        ).filter(
-            activity_participants.c.activity_id == activity.id
+        memberships = db.query(ActivityMembership).filter(
+            ActivityMembership.activity_id == activity.id
         ).all()
-        participant_emails = [p[0] for p in participants]
-        
+
+        participant_entries = []
+        for m in memberships:
+            participant_entries.append({
+                "student_email": m.student_email,
+                "signup_date": m.signup_date,
+                "status": m.status.value,
+                "withdrawn_date": m.withdrawn_date,
+                "notes": m.notes,
+            })
+
         result[activity.name] = {
             "description": activity.description,
             "schedule": activity.schedule,
             "max_participants": activity.max_participants,
-            "participants": participant_emails
+            "participants": participant_entries
         }
     return result
 
@@ -174,20 +179,18 @@ def get_activities(db: Session = Depends(get_db)):
 @app.post("/activities/{activity_name}/signup")
 def signup_for_activity(activity_name: str, email: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Sign up a student for an activity (requires authentication)"""
-    from models import activity_participants
-    
     # Find the activity
     activity = db.query(Activity).filter(Activity.name == activity_name).first()
     if not activity:
         raise HTTPException(status_code=404, detail="Activity not found")
 
-    # Check if student is already signed up
-    existing = db.query(activity_participants).filter(
-        (activity_participants.c.activity_id == activity.id) &
-        (activity_participants.c.student_email == email)
+    # Check if membership already exists
+    existing = db.query(ActivityMembership).filter(
+        (ActivityMembership.activity_id == activity.id) &
+        (ActivityMembership.student_email == email)
     ).first()
-    
-    if existing:
+
+    if existing and existing.status != ActivityMembershipStatus.WITHDRAWN:
         raise HTTPException(
             status_code=400,
             detail="Student is already signed up"
@@ -200,8 +203,20 @@ def signup_for_activity(activity_name: str, email: str, db: Session = Depends(ge
         db.add(student)
         db.flush()
 
-    # Add student to activity
-    activity.participants.append(student)  # type: ignore
+    # Create membership record
+    if existing and existing.status == ActivityMembershipStatus.WITHDRAWN:
+        existing.status = ActivityMembershipStatus.ACTIVE
+        existing.withdrawn_date = None
+        existing.signup_date = datetime.utcnow()
+        db.add(existing)
+    else:
+        membership = ActivityMembership(
+            activity_id=activity.id,
+            student_email=email,
+            status=ActivityMembershipStatus.ACTIVE
+        )
+        db.add(membership)
+
     db.commit()
     
     return {"message": f"Signed up {email} for {activity_name}"}
@@ -210,29 +225,27 @@ def signup_for_activity(activity_name: str, email: str, db: Session = Depends(ge
 @app.delete("/activities/{activity_name}/unregister")
 def unregister_from_activity(activity_name: str, email: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Unregister a student from an activity (requires authentication)"""
-    from models import activity_participants
-    
     # Find the activity
     activity = db.query(Activity).filter(Activity.name == activity_name).first()
     if not activity:
         raise HTTPException(status_code=404, detail="Activity not found")
 
-    # Check if student is signed up
-    existing = db.query(activity_participants).filter(
-        (activity_participants.c.activity_id == activity.id) &
-        (activity_participants.c.student_email == email)
+    # Find membership
+    existing = db.query(ActivityMembership).filter(
+        (ActivityMembership.activity_id == activity.id) &
+        (ActivityMembership.student_email == email)
     ).first()
-    
-    if not existing:
+
+    if not existing or existing.status == ActivityMembershipStatus.WITHDRAWN:
         raise HTTPException(
             status_code=400,
             detail="Student is not signed up for this activity"
         )
 
-    # Find and remove the student
-    student = db.query(Student).filter(Student.email == email).first()
-    if student:
-        activity.participants.remove(student)  # type: ignore
-        db.commit()
-    
+    # Mark withdrawn
+    existing.status = ActivityMembershipStatus.WITHDRAWN
+    existing.withdrawn_date = datetime.utcnow()
+    db.add(existing)
+    db.commit()
+
     return {"message": f"Unregistered {email} from {activity_name}"}
