@@ -4,17 +4,25 @@ High School Management System API
 A super simple FastAPI application that allows students to view and sign up
 for extracurricular activities at Mergington High School.
 
-Now using SQLAlchemy for persistent database storage instead of in-memory data.
+Features:
+- Persistent SQLAlchemy database storage
+- User authentication with JWT tokens
+- Role-based access control (Student, Teacher, Admin)
+- Activity management and signup
 """
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
+from starlette.requests import Request
 import os
 from pathlib import Path
 from sqlalchemy.orm import Session
 from database import SessionLocal, init_db, get_db
-from models import Activity, Student, activity_participants
+from models import Activity, Student, User, UserRole
+from auth import hash_password, verify_password, create_access_token, decode_token
+from schemas import UserRegister, UserLogin, Token, UserResponse
+import secrets
 
 app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
@@ -31,14 +39,118 @@ except:
     pass  # Database might already be initialized
 
 
+def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
+    """Get the current authenticated user from JWT token."""
+    # Get token from Authorization header
+    auth_header = request.headers.get("authorization")
+    
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    token = auth_header.replace("Bearer ", "")
+    payload = decode_token(token)
+    
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    email: str = payload.get("sub")
+    if email is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials"
+        )
+    
+    user = db.query(User).filter(User.email == email).first()
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found"
+        )
+    
+    return user
+
 @app.get("/")
 def root():
     return RedirectResponse(url="/static/index.html")
 
 
+# Authentication Endpoints
+
+@app.post("/auth/register", response_model=UserResponse)
+def register(user_data: UserRegister, db: Session = Depends(get_db)):
+    """Register a new user account."""
+    # Check if user already exists
+    existing_user = db.query(User).filter(User.email == user_data.email).first()
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )
+    
+    # Create new user
+    hashed_password = hash_password(user_data.password)
+    user = User(
+        email=user_data.email,
+        full_name=user_data.full_name,
+        hashed_password=hashed_password,
+        role=user_data.role
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    
+    return user
+
+
+@app.post("/auth/login", response_model=Token)
+def login(credentials: UserLogin, db: Session = Depends(get_db)):
+    """Authenticate user and return JWT token."""
+    user = db.query(User).filter(User.email == credentials.email).first()
+    
+    if user is None or not verify_password(credentials.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password"
+        )
+    
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is inactive"
+        )
+    
+    access_token = create_access_token(data={"sub": user.email})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+@app.post("/auth/logout")
+def logout(current_user: User = Depends(get_current_user)):
+    """Logout endpoint (token invalidation handled on client-side)."""
+    return {"message": "Successfully logged out"}
+
+
+@app.get("/auth/me", response_model=UserResponse)
+def get_current_user_info(current_user: User = Depends(get_current_user)):
+    """Get current user information."""
+    return current_user
+
+
+# Activity Endpoints
+
+
 @app.get("/activities")
 def get_activities(db: Session = Depends(get_db)):
     """Get all activities with their participants."""
+    from models import activity_participants
+    
     activities_list = db.query(Activity).all()
     result = {}
     for activity in activities_list:
@@ -60,8 +172,10 @@ def get_activities(db: Session = Depends(get_db)):
 
 
 @app.post("/activities/{activity_name}/signup")
-def signup_for_activity(activity_name: str, email: str, db: Session = Depends(get_db)):
-    """Sign up a student for an activity"""
+def signup_for_activity(activity_name: str, email: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Sign up a student for an activity (requires authentication)"""
+    from models import activity_participants
+    
     # Find the activity
     activity = db.query(Activity).filter(Activity.name == activity_name).first()
     if not activity:
@@ -94,8 +208,10 @@ def signup_for_activity(activity_name: str, email: str, db: Session = Depends(ge
 
 
 @app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str, db: Session = Depends(get_db)):
-    """Unregister a student from an activity"""
+def unregister_from_activity(activity_name: str, email: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Unregister a student from an activity (requires authentication)"""
+    from models import activity_participants
+    
     # Find the activity
     activity = db.query(Activity).filter(Activity.name == activity_name).first()
     if not activity:

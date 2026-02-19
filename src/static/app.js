@@ -3,6 +3,56 @@ document.addEventListener("DOMContentLoaded", () => {
   const activitySelect = document.getElementById("activity");
   const signupForm = document.getElementById("signup-form");
   const messageDiv = document.getElementById("message");
+  const mainContent = document.getElementById("mainContent");
+  const notAuthenticated = document.getElementById("notAuthenticated");
+  const userInfo = document.getElementById("userInfo");
+  const userEmail = document.getElementById("userEmail");
+  const userRole = document.getElementById("userRole");
+
+  // Get access token from localStorage
+  function getAccessToken() {
+    return localStorage.getItem("access_token");
+  }
+
+  // Check if user is authenticated
+  async function checkAuthentication() {
+    const token = getAccessToken();
+    
+    if (!token) {
+      mainContent.style.display = "none";
+      notAuthenticated.style.display = "block";
+      return false;
+    }
+
+    try {
+      const response = await fetch("/auth/me", {
+        headers: {
+          "Authorization": `Bearer ${token}`
+        }
+      });
+
+      if (response.ok) {
+        const user = await response.json();
+        userEmail.textContent = `User: ${user.email}`;
+        userRole.textContent = `Role: ${user.role}`;
+        userInfo.style.display = "flex";
+        mainContent.style.display = "block";
+        notAuthenticated.style.display = "none";
+        return true;
+      } else {
+        // Token is invalid
+        localStorage.removeItem("access_token");
+        mainContent.style.display = "none";
+        notAuthenticated.style.display = "block";
+        return false;
+      }
+    } catch (error) {
+      console.error("Authentication check failed:", error);
+      mainContent.style.display = "none";
+      notAuthenticated.style.display = "block";
+      return false;
+    }
+  }
 
   // Function to fetch activities from API
   async function fetchActivities() {
@@ -72,6 +122,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const button = event.target;
     const activity = button.getAttribute("data-activity");
     const email = button.getAttribute("data-email");
+    const token = getAccessToken();
 
     try {
       const response = await fetch(
@@ -80,6 +131,9 @@ document.addEventListener("DOMContentLoaded", () => {
         )}/unregister?email=${encodeURIComponent(email)}`,
         {
           method: "DELETE",
+          headers: {
+            "Authorization": `Bearer ${token}`
+          }
         }
       );
 
@@ -116,6 +170,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const email = document.getElementById("email").value;
     const activity = document.getElementById("activity").value;
+    const token = getAccessToken();
 
     try {
       const response = await fetch(
@@ -124,6 +179,9 @@ document.addEventListener("DOMContentLoaded", () => {
         )}/signup?email=${encodeURIComponent(email)}`,
         {
           method: "POST",
+          headers: {
+            "Authorization": `Bearer ${token}`
+          }
         }
       );
 
@@ -155,6 +213,20 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // Initialize app
-  fetchActivities();
+  // Handle logout
+  window.handleLogout = function() {
+    localStorage.removeItem("access_token");
+    window.location.href = "/static/auth.html";
+  };
+
+  // Initialize app after authentication check
+  async function initializeApp() {
+    const isAuthenticated = await checkAuthentication();
+    if (isAuthenticated) {
+      fetchActivities();
+    }
+  }
+
+  initializeApp();
 });
+
